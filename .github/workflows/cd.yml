@@ -1,0 +1,37 @@
+name: CD (verificación del despliegue en Vercel)
+
+# Actions NO despliega. Vercel despliega solo (integración con Git).
+# Este workflow se dispara cuando Vercel reporta un despliegue a GitHub
+# y comprueba que el frontend responda.
+on:
+  deployment_status:
+
+permissions:
+  contents: read
+  deployments: read
+
+jobs:
+  verificar:
+    name: Verificar despliegue de Vercel
+    if: github.event.deployment_status.state == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      URL_DESPLIEGUE: ${{ github.event.deployment_status.environment_url || github.event.deployment_status.target_url }}
+    steps:
+      - name: Datos del despliegue
+        run: |
+          {
+            echo "### Despliegue de Vercel"
+            echo "- Entorno: ${{ github.event.deployment.environment }}"
+            echo "- Commit: ${{ github.event.deployment.sha }}"
+            echo "- URL: $URL_DESPLIEGUE"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: El frontend responde
+        run: |
+          for i in $(seq 1 10); do
+            curl -fsS -o /dev/null "$URL_DESPLIEGUE/login" && echo "Frontend OK" && exit 0
+            sleep 5
+          done
+          echo "El frontend no respondió" && exit 1

@@ -1,0 +1,784 @@
+import React, { useEffect, useMemo, useState } from "react";
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  Pressable,
+  TextInput,
+  ActivityIndicator,
+  Modal,
+  Alert,
+} from "react-native";
+import { useRouter } from "expo-router";
+import { useAuth } from "../../context/AuthContext";
+import { useTheme, type Theme } from "../../theme/theme";
+import { UpgradeModal, CrownSvg } from "../../components/UpgradeModal";
+import {
+  getInventario,
+  registrarLoteInventario,
+  getMedicamentos,
+  registrarMedicamento,
+  actualizarLoteInventario,
+} from "../../services/almacenService";
+
+export default function ControlInventarioScreen() {
+  const router = useRouter();
+  const c = useTheme();
+  const styles = useMemo(() => createStyles(c), [c]);
+  const { planActual } = useAuth();
+  const [modalUpgradeVisible, setModalUpgradeVisible] = useState(false);
+
+  const planNormalizado = (planActual?.nombre_plan || "basico")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim();
+  const tieneAccesoInventario =
+    planNormalizado === "profesional" || planNormalizado === "empresarial";
+
+  const [inventario, setInventario] = useState<any[]>([]);
+  const [medicamentos, setMedicamentos] = useState<any[]>([]);
+  const [cargando, setCargando] = useState<boolean>(true);
+
+  const [modalVisible, setModalVisible] = useState<boolean>(false);
+  const [modalMode, setModalMode] = useState<"lote" | "medicamento" | "editar-lote">("lote");
+  const [medSeleccionado, setMedSeleccionado] = useState<number | null>(null);
+  const [loteEditando, setLoteEditando] = useState<any | null>(null);
+  const [numeroLote, setNumeroLote] = useState<string>("");
+  const [stockActual, setStockActual] = useState<string>("");
+  const [ubicacion, setUbicacion] = useState<string>("");
+  // Caducidad del lote (AAAA-MM-DD). Vacía = el artículo no caduca (p. ej. equipo).
+  const [fechaVencimiento, setFechaVencimiento] = useState<string>("");
+  // Tipo de artículo: medicamento, insumo (guantes, jeringas, alcohol...) o equipo
+  const [tipoArticulo, setTipoArticulo] = useState<"medicamento" | "insumo" | "equipo">("medicamento");
+  const [unidadMedida, setUnidadMedida] = useState<string>("");
+  const [stockMinimo, setStockMinimo] = useState<string>("");
+  const [nombreMedicamento, setNombreMedicamento] = useState<string>("");
+  const [principioActivo, setPrincipioActivo] = useState<string>("");
+  const [presentacion, setPresentacion] = useState<string>("");
+  const [categoria, setCategoria] = useState<string>("");
+  const [codigoBarras, setCodigoBarras] = useState<string>("");
+  const [descripcion, setDescripcion] = useState<string>("");
+  const [requiereReceta, setRequiereReceta] = useState<boolean>(false);
+  const [guardando, setGuardando] = useState<boolean>(false);
+
+  const cargarDatos = async () => {
+    if (!tieneAccesoInventario) {
+      setCargando(false);
+      setModalUpgradeVisible(true);
+      return;
+    }
+    try {
+      setCargando(true);
+      const [invData, medsData] = await Promise.all([
+        getInventario(),
+        getMedicamentos(),
+      ]);
+      setInventario(invData);
+      setMedicamentos(medsData);
+    } catch (error) {
+      console.warn("Error al cargar datos del almacén:", error);
+    } finally {
+      setCargando(false);
+    }
+  };
+
+  useEffect(() => {
+    cargarDatos();
+  }, []);
+
+  const handleGuardarLote = async () => {
+    if (!medSeleccionado || !numeroLote || !stockActual) {
+      Alert.alert("Campos requeridos", "Por favor completa el medicamento, lote y stock.");
+      return;
+    }
+
+    const fechaTxt = fechaVencimiento.trim();
+    const fechaOk = /^\d{4}-\d{2}-\d{2}$/.test(fechaTxt) && !Number.isNaN(Date.parse(fechaTxt));
+    if (fechaTxt && !fechaOk) {
+      Alert.alert("Fecha inválida", "Escribe la caducidad como AAAA-MM-DD (ej. 2027-08-31) o déjala vacía si no caduca.");
+      return;
+    }
+
+    const datosLote = {
+        medicamento_id_FK: medSeleccionado,
+        numero_lote: numeroLote,
+        stock_actual: parseInt(stockActual, 10),
+        ubicacion: ubicacion || undefined,
+        fecha_vencimiento: fechaTxt || null,
+        precio_venta: loteEditando?.precio_venta,
+        proveedor_id_FK: loteEditando?.proveedor_id_FK,
+        fecha_recepcion: loteEditando?.fecha_recepcion,
+      };
+
+    try {
+      setGuardando(true);
+      if (modalMode === "editar-lote" && loteEditando) {
+        await actualizarLoteInventario(loteEditando.id_PK, datosLote);
+      } else {
+        await registrarLoteInventario(datosLote);
+      }
+
+      Alert.alert(
+        "Éxito",
+        modalMode === "editar-lote"
+          ? "Lote actualizado correctamente."
+          : "Lote registrado correctamente en el almacén."
+      );
+      setModalVisible(false);
+      setNumeroLote("");
+      setStockActual("");
+      setUbicacion("");
+      setFechaVencimiento("");
+      setMedSeleccionado(null);
+      setLoteEditando(null);
+      cargarDatos();
+    } catch (error: any) {
+      console.warn("Error al registrar lote:", error);
+      Alert.alert(
+        "Error",
+        error?.response?.data?.detail || "No se pudo guardar el lote de inventario."
+      );
+    } finally {
+      setGuardando(false);
+    }
+  };
+
+  const iniciarEdicionLote = (item: any) => {
+    setLoteEditando(item);
+    setMedSeleccionado(Number(item.medicamento_id_FK));
+    setNumeroLote(item.numero_lote || "");
+    setStockActual(String(item.stock_actual ?? ""));
+    setUbicacion(item.ubicacion || "");
+    setFechaVencimiento(item.fecha_vencimiento ? String(item.fecha_vencimiento).slice(0, 10) : "");
+    setModalMode("editar-lote");
+    setModalVisible(true);
+  };
+
+  const handleGuardarMedicamento = async () => {
+    if (!nombreMedicamento.trim()) {
+      Alert.alert("Campo requerido", "Escribe el nombre del medicamento.");
+      return;
+    }
+
+    try {
+      setGuardando(true);
+      const nuevoMedicamento = await registrarMedicamento({
+        nombre: nombreMedicamento,
+        principio_activo: principioActivo,
+        presentacion,
+        categoria,
+        codigo_barras: codigoBarras,
+        descripcion,
+        requiere_receta: tipoArticulo === "medicamento" ? requiereReceta : false,
+        tipo_articulo: tipoArticulo,
+        unidad_medida: unidadMedida,
+        stock_minimo: parseInt(stockMinimo, 10) || 0,
+      });
+
+      setMedicamentos((actuales) =>
+        [...actuales, nuevoMedicamento].sort((a, b) =>
+          a.nombre.localeCompare(b.nombre)
+        )
+      );
+      setMedSeleccionado(nuevoMedicamento.id_PK);
+      setNombreMedicamento("");
+      setPrincipioActivo("");
+      setPresentacion("");
+      setCategoria("");
+      setCodigoBarras("");
+      setDescripcion("");
+      setRequiereReceta(false);
+      setTipoArticulo("medicamento");
+      setUnidadMedida("");
+      setStockMinimo("");
+      setModalMode("lote");
+    } catch (error: any) {
+      Alert.alert(
+        "Error",
+        error?.response?.data?.detail || "No se pudo guardar el medicamento."
+      );
+    } finally {
+      setGuardando(false);
+    }
+  };
+
+  const volverAlPanel = () => {
+    if (router.canGoBack()) {
+      router.back();
+    } else {
+      router.replace("/admin");
+    }
+  };
+
+  const medicamentosPorId = new Map(
+    medicamentos.map((medicamento) => [Number(medicamento.id_PK), medicamento])
+  );
+
+  if (!tieneAccesoInventario) {
+    return (
+      <View style={styles.container}>
+        <View style={styles.header}>
+          <Text style={styles.title}>Control de Almacén e Inventario</Text>
+          <Text style={styles.subtitle}>
+            Monitoreo y administración de medicamentos, insumos clínicos y lotes.
+          </Text>
+        </View>
+
+        <View style={styles.premiumBannerWrapper}>
+          <View style={styles.premiumCard}>
+            <View style={styles.premiumIconContainer}>
+              <CrownSvg size={36} color="#FBBF24" />
+            </View>
+
+            <View style={styles.badgePremium}>
+              <Text style={styles.badgePremiumTexto}>
+                FUNCIÓN EXCLUSIVA PLAN PROFESIONAL
+              </Text>
+            </View>
+
+            <Text style={styles.premiumTitulo}>
+              Almacén e Inventario de Medicamentos
+            </Text>
+
+            <Text style={styles.premiumDescripcion}>
+              Gestiona el catálogo de fármacos, lotes con caducidades, alertas de stock mínimo y trazabilidad de insumos médicos para asegurar el abastecimiento de tu clínica.
+            </Text>
+
+            <Pressable
+              style={styles.botonDesbloquear}
+              onPress={() => setModalUpgradeVisible(true)}
+              accessibilityRole="button"
+              accessibilityLabel="Ver planes de mejora"
+            >
+              <Text style={styles.botonDesbloquearTexto}>
+                Ver planes de mejora
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+
+        <UpgradeModal
+          visible={modalUpgradeVisible}
+          modulo="Almacén e Inventario"
+          planRequerido="Profesional"
+          descripcion="El control de existencias, gestión de lotes y alertas de caducidad están disponibles a partir del Plan Profesional. Actualiza tu suscripción para desbloquear el módulo de almacén."
+          onClose={() => setModalUpgradeVisible(false)}
+        />
+      </View>
+    );
+  }
+
+  return (
+    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+      <Pressable onPress={volverAlPanel} style={styles.backButton}>
+        <Text style={styles.backText}>← Volver al panel</Text>
+      </Pressable>
+
+      <Text style={styles.title}>Control de Inventario y Almacén</Text>
+      <Text style={styles.subtitle}>
+        Supervisa existencias, lotes y registra nuevas entradas de insumos.
+      </Text>
+
+      <Pressable
+        style={styles.btnAgregar}
+        onPress={() => {
+          setModalMode("lote");
+          setModalVisible(true);
+        }}
+      >
+        <Text style={styles.btnAgregarText}>+ Registrar Entrada de Lote</Text>
+      </Pressable>
+
+      <Text style={styles.sectionHeader}>Existencias Actuales</Text>
+
+      {cargando ? (
+        <ActivityIndicator size="large" color="#247F76" style={{ marginTop: 20 }} />
+      ) : inventario.length === 0 ? (
+        <Text style={styles.emptyText}>No hay registros de inventario en almacén.</Text>
+      ) : (
+        inventario.map((item) => {
+          const esBajoStock = item.stock_actual < 10;
+          const medicamento =
+            item.medicamento || medicamentosPorId.get(Number(item.medicamento_id_FK));
+          return (
+            <View key={item.id_PK} style={styles.card}>
+              <View style={styles.cardHeader}>
+                <Text style={styles.cardTitle}>
+                  {medicamento?.nombre || `Medicamento #${item.medicamento_id_FK}`}
+                </Text>
+                <View
+                  style={[
+                    styles.badge,
+                    esBajoStock ? styles.badgeWarning : styles.badgeSuccess,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.badgeText,
+                      esBajoStock ? styles.badgeTextWarning : styles.badgeTextSuccess,
+                    ]}
+                  >
+                    {esBajoStock ? "Stock Bajo" : "Disponible"}
+                  </Text>
+                </View>
+              </View>
+
+              <Text style={styles.cardDetail}>
+                Lote: <Text style={styles.bold}>{item.numero_lote || "N/A"}</Text>
+              </Text>
+              <Text style={styles.cardDetail}>
+                Cantidad disponible: <Text style={styles.bold}>{item.stock_actual} unidades</Text>
+              </Text>
+              {(() => {
+                if (!item.fecha_vencimiento) return <Text style={styles.cardDetail}>Sin fecha de caducidad</Text>;
+                const dias = Math.ceil((new Date(String(item.fecha_vencimiento).slice(0, 10) + "T00:00:00").getTime() - Date.now()) / 86400000);
+                const color = dias < 0 ? "#D65A5A" : dias <= 60 ? "#B7791F" : "#26443F";
+                return (
+                  <Text style={[styles.cardDetail, { color, fontWeight: dias <= 60 ? "700" : "400" }]}>
+                    Caduca: {String(item.fecha_vencimiento).slice(0, 10)}
+                    {dias < 0 ? " (VENCIDO)" : dias <= 60 ? ` (en ${dias} días)` : ""}
+                  </Text>
+                );
+              })()}
+              {item.ubicacion && (
+                <Text style={styles.cardDetail}>
+                  Ubicación en almacén: {item.ubicacion}
+                </Text>
+              )}
+              <View style={styles.cardActions}>
+                <Pressable
+                  style={styles.editButton}
+                  onPress={() => iniciarEdicionLote(item)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Editar lote ${item.numero_lote || item.id_PK}`}
+                >
+                  <Text style={styles.editButtonText}>Editar lote</Text>
+                </Pressable>
+              </View>
+            </View>
+          );
+        })
+      )}
+
+      <Modal visible={modalVisible} animationType="slide" transparent>
+        <View style={styles.modalOverlay}>
+          <ScrollView
+            style={styles.modalContent}
+            contentContainerStyle={styles.modalContentInner}
+            keyboardShouldPersistTaps="handled"
+          >
+            {modalMode !== "medicamento" ? (
+              <>
+                <Text style={styles.modalTitle}>
+                  {modalMode === "editar-lote" ? "Editar Lote de Inventario" : "Registrar Lote de Inventario"}
+                </Text>
+
+                <Text style={styles.label}>Selecciona Medicamento:</Text>
+                {medicamentos.length === 0 ? (
+                  <View style={styles.catalogoVacio}>
+                    <Text style={styles.catalogoVacioText}>
+                      Aún no hay medicamentos en el catálogo.
+                    </Text>
+                    <Pressable
+                      style={styles.btnAgregarSecundario}
+                      onPress={() => setModalMode("medicamento")}
+                    >
+                      <Text style={styles.btnAgregarSecundarioText}>Agregar medicamento</Text>
+                    </Pressable>
+                  </View>
+                ) : (
+                  <ScrollView style={styles.medList} nestedScrollEnabled>
+                    {medicamentos.map((m) => (
+                      <Pressable
+                        key={m.id_PK}
+                        style={[
+                          styles.medOption,
+                          medSeleccionado === m.id_PK && styles.medOptionSelected,
+                        ]}
+                        onPress={() => setMedSeleccionado(m.id_PK)}
+                      >
+                        <Text style={medSeleccionado === m.id_PK ? styles.textWhite : styles.textDark}>
+                          {m.nombre}
+                        </Text>
+                        {!!m.presentacion && (
+                          <Text style={medSeleccionado === m.id_PK ? styles.medSubSelected : styles.medSub}>
+                            {m.presentacion}
+                          </Text>
+                        )}
+                      </Pressable>
+                    ))}
+                  </ScrollView>
+                )}
+
+                {modalMode === "lote" && medicamentos.length > 0 && (
+                  <Pressable
+                    style={styles.linkAgregarMedicamento}
+                    onPress={() => setModalMode("medicamento")}
+                  >
+                    <Text style={styles.linkAgregarMedicamentoText}>+ Agregar medicamento nuevo</Text>
+                  </Pressable>
+                )}
+
+                <Text style={styles.label}>Número de Lote:</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Ej. LOT-2026-A"
+                  value={numeroLote}
+                  onChangeText={setNumeroLote}
+                />
+
+                <Text style={styles.label}>Cantidad / Stock Inicial:</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Ej. 50"
+                  keyboardType="numeric"
+                  value={stockActual}
+                  onChangeText={setStockActual}
+                />
+
+                <Text style={styles.label}>Ubicación en Almacén (Opcional):</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Ej. Estante B3"
+                  value={ubicacion}
+                  onChangeText={setUbicacion}
+                />
+
+                <Text style={styles.label}>Fecha de caducidad (AAAA-MM-DD):</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Ej. 2027-08-31"
+                  value={fechaVencimiento}
+                  onChangeText={setFechaVencimiento}
+                  maxLength={10}
+                  autoCapitalize="none"
+                />
+                <Text style={styles.helperText}>
+                  Déjala vacía si el artículo no caduca (p. ej. equipo). Con fecha, el sistema avisa antes de vencer y no
+                  entrega lotes vencidos.
+                </Text>
+
+                <View style={styles.modalButtons}>
+                  <Pressable
+                    style={[styles.btnModal, styles.btnCancelar]}
+                    onPress={() => setModalVisible(false)}
+                    disabled={guardando}
+                  >
+                    <Text style={styles.btnTextCancelar}>Cancelar</Text>
+                  </Pressable>
+
+                  <Pressable
+                    style={[styles.btnModal, styles.btnGuardar, guardando && styles.btnDisabled]}
+                    onPress={handleGuardarLote}
+                    disabled={guardando}
+                  >
+                    <Text style={styles.btnTextGuardar}>
+                      {guardando
+                        ? "Guardando..."
+                        : modalMode === "editar-lote"
+                          ? "Guardar cambios"
+                          : "Guardar Lote"}
+                    </Text>
+                  </Pressable>
+                </View>
+              </>
+            ) : (
+              <>
+                <Pressable onPress={() => setModalMode("lote")} style={styles.backToLot}>
+                  <Text style={styles.backToLotText}>← Volver al lote</Text>
+                </Pressable>
+                <Text style={styles.modalTitle}>Agregar Medicamento</Text>
+                <Text style={styles.helperText}>El nombre es obligatorio; los demás datos son opcionales.</Text>
+
+                <Text style={styles.label}>Tipo de artículo *</Text>
+                <View style={{ flexDirection: "row", gap: 8, marginBottom: 10 }}>
+                  {([
+                    ["medicamento", "Medicamento"],
+                    ["insumo", "Insumo"],
+                    ["equipo", "Equipo"],
+                  ] as const).map(([valor, texto]) => (
+                    <Pressable
+                      key={valor}
+                      onPress={() => setTipoArticulo(valor)}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected: tipoArticulo === valor }}
+                      style={{
+                        flex: 1,
+                        paddingVertical: 9,
+                        borderRadius: 10,
+                        borderWidth: 1,
+                        alignItems: "center",
+                        borderColor: tipoArticulo === valor ? "#247F76" : "#D5E3DF",
+                        backgroundColor: tipoArticulo === valor ? "#E2F4F0" : "#FFFFFF",
+                      }}
+                    >
+                      <Text style={{ fontWeight: "700", color: tipoArticulo === valor ? "#247F76" : "#667773" }}>{texto}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+                <Text style={styles.helperText}>
+                  Insumo = guantes, jeringas, agujas, alcohol, gasas... Los insumos y el equipo no se pueden recetar.
+                </Text>
+
+                <Text style={styles.label}>Nombre *</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Ej. Paracetamol o Guantes de nitrilo talla M"
+                  value={nombreMedicamento}
+                  onChangeText={setNombreMedicamento}
+                  maxLength={200}
+                />
+
+                <Text style={styles.label}>Principio activo</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Ej. Paracetamol"
+                  value={principioActivo}
+                  onChangeText={setPrincipioActivo}
+                  maxLength={200}
+                />
+
+                <Text style={styles.label}>Presentación</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Ej. 500 mg, caja con 20 tabletas"
+                  value={presentacion}
+                  onChangeText={setPresentacion}
+                  maxLength={100}
+                />
+
+                <Text style={styles.label}>Categoría</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Ej. Analgésico, Protección personal"
+                  value={categoria}
+                  onChangeText={setCategoria}
+                  maxLength={100}
+                />
+
+                <Text style={styles.label}>Unidad de medida</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Ej. pieza, caja, par, frasco"
+                  value={unidadMedida}
+                  onChangeText={setUnidadMedida}
+                  maxLength={30}
+                />
+
+                <Text style={styles.label}>Stock mínimo (alerta de reposición)</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Ej. 50 (0 = usar el umbral general)"
+                  keyboardType="numeric"
+                  value={stockMinimo}
+                  onChangeText={setStockMinimo}
+                />
+
+                <Text style={styles.label}>Código de barras</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Opcional"
+                  value={codigoBarras}
+                  onChangeText={setCodigoBarras}
+                  maxLength={100}
+                />
+
+                <Text style={styles.label}>Descripción</Text>
+                <TextInput
+                  style={[styles.input, styles.descriptionInput]}
+                  placeholder="Opcional"
+                  value={descripcion}
+                  onChangeText={setDescripcion}
+                  multiline
+                  textAlignVertical="top"
+                />
+
+                <Text style={styles.label}>¿Requiere receta?</Text>
+                <View style={styles.recipeToggle}>
+                  {[false, true].map((value) => (
+                    <Pressable
+                      key={String(value)}
+                      style={[
+                        styles.recipeOption,
+                        requiereReceta === value && styles.recipeOptionSelected,
+                      ]}
+                      onPress={() => setRequiereReceta(value)}
+                    >
+                      <Text
+                        style={[
+                          styles.recipeOptionText,
+                          requiereReceta === value && styles.recipeOptionTextSelected,
+                        ]}
+                      >
+                        {value ? "Sí" : "No"}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+
+                <View style={styles.modalButtons}>
+                  <Pressable
+                    style={[styles.btnModal, styles.btnCancelar]}
+                    onPress={() => setModalVisible(false)}
+                    disabled={guardando}
+                  >
+                    <Text style={styles.btnTextCancelar}>Cancelar</Text>
+                  </Pressable>
+
+                  <Pressable
+                    style={[styles.btnModal, styles.btnGuardar, guardando && styles.btnDisabled]}
+                    onPress={handleGuardarMedicamento}
+                    disabled={guardando}
+                  >
+                    <Text style={styles.btnTextGuardar}>
+                      {guardando ? "Guardando..." : "Guardar y continuar"}
+                    </Text>
+                  </Pressable>
+                </View>
+              </>
+            )}
+          </ScrollView>
+        </View>
+      </Modal>
+    </ScrollView>
+  );
+}
+
+const createStyles = (c: Theme) => {
+  const isDark = c.mode === "dark";
+  return StyleSheet.create({
+    container: { flex: 1, backgroundColor: c.bg },
+    content: { padding: 20 },
+    backButton: { marginBottom: 15 },
+    backText: { color: c.primary, fontWeight: "bold" },
+    header: { marginBottom: 16 },
+    title: { fontSize: 24, fontWeight: "800", color: c.text },
+    subtitle: { fontSize: 13, color: c.muted, marginVertical: 6 },
+    btnAgregar: { backgroundColor: c.primary, padding: 14, borderRadius: 12, alignItems: "center", marginVertical: 15 },
+    btnAgregarText: { color: isDark ? "#121212" : "#FFFFFF", fontWeight: "bold", fontSize: 15 },
+    sectionHeader: { fontSize: 16, fontWeight: "700", color: c.text, marginBottom: 10 },
+    emptyText: { color: c.muted, fontStyle: "italic", marginTop: 10 },
+    card: { backgroundColor: c.card, padding: 16, borderRadius: 14, borderWidth: 1, borderColor: c.border, marginBottom: 12 },
+    cardHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 8 },
+    cardTitle: { fontSize: 16, fontWeight: "800", color: c.text },
+    cardDetail: { fontSize: 13, color: c.muted, marginTop: 2 },
+    cardActions: { flexDirection: "row", justifyContent: "flex-end", marginTop: 10 },
+    editButton: { borderWidth: 1, borderColor: c.primary, borderRadius: 8, paddingVertical: 7, paddingHorizontal: 12 },
+    editButtonText: { color: c.primary, fontSize: 13, fontWeight: "700" },
+    bold: { fontWeight: "bold" },
+    badge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
+    badgeSuccess: { backgroundColor: isDark ? "rgba(8,191,164,0.18)" : "#E2F4F0" },
+    badgeWarning: { backgroundColor: isDark ? "rgba(248,113,113,0.18)" : "#FFEBE9" },
+    badgeText: { fontSize: 11, fontWeight: "bold" },
+    badgeTextSuccess: { color: isDark ? "#2DD4BF" : c.primary },
+    badgeTextWarning: { color: isDark ? "#F87171" : "#CF222E" },
+    modalOverlay: { flex: 1, backgroundColor: isDark ? "rgba(0,0,0,0.75)" : "rgba(0,0,0,0.45)", justifyContent: "center", padding: 20 },
+    modalContent: { backgroundColor: c.card, borderRadius: 18, maxHeight: "90%", borderWidth: 1, borderColor: c.border },
+    modalContentInner: { padding: 20 },
+    modalTitle: { fontSize: 18, fontWeight: "800", color: c.text, marginBottom: 15 },
+    helperText: { fontSize: 12, color: c.muted, marginTop: -10, marginBottom: 14 },
+    label: { fontSize: 12, fontWeight: "700", color: c.muted, marginBottom: 4 },
+    input: { borderWidth: 1, borderColor: c.border, borderRadius: 8, padding: 10, marginBottom: 10, fontSize: 14, backgroundColor: isDark ? "#1E2631" : "#FBFEFD", color: c.text },
+    descriptionInput: { minHeight: 72 },
+    catalogoVacio: { borderWidth: 1, borderStyle: "dashed", borderColor: c.border, borderRadius: 8, padding: 12, marginBottom: 12 },
+    catalogoVacioText: { color: c.muted, fontSize: 13, marginBottom: 10 },
+    btnAgregarSecundario: { alignSelf: "flex-start", borderWidth: 1, borderColor: c.primary, borderRadius: 8, paddingVertical: 8, paddingHorizontal: 12 },
+    btnAgregarSecundarioText: { color: c.primary, fontWeight: "700", fontSize: 13 },
+    linkAgregarMedicamento: { alignSelf: "flex-start", paddingVertical: 4, marginBottom: 12 },
+    linkAgregarMedicamentoText: { color: c.primary, fontWeight: "700", fontSize: 13 },
+    medList: { maxHeight: 120, marginBottom: 4 },
+    medOption: { padding: 8, borderRadius: 6, borderWidth: 1, borderColor: c.border, marginBottom: 4, backgroundColor: c.card },
+    medOptionSelected: { backgroundColor: c.primary, borderColor: c.primary },
+    medSub: { color: c.muted, fontSize: 11, marginTop: 2 },
+    medSubSelected: { color: isDark ? "#121212" : "#FFFFFF", fontSize: 11, marginTop: 2 },
+    textWhite: { color: "#FFF", fontWeight: "bold" },
+    textDark: { color: c.text },
+    backToLot: { alignSelf: "flex-start", marginBottom: 12 },
+    backToLotText: { color: c.primary, fontWeight: "700" },
+    recipeToggle: { flexDirection: "row", gap: 8, marginBottom: 12 },
+    recipeOption: { borderWidth: 1, borderColor: c.border, borderRadius: 8, paddingVertical: 8, paddingHorizontal: 16, backgroundColor: c.card },
+    recipeOptionSelected: { backgroundColor: c.primary, borderColor: c.primary },
+    recipeOptionText: { color: c.muted, fontWeight: "700" },
+    recipeOptionTextSelected: { color: isDark ? "#121212" : "#FFFFFF" },
+    modalButtons: { flexDirection: "row", justifyContent: "flex-end", gap: 10, marginTop: 15 },
+    btnModal: { paddingVertical: 10, paddingHorizontal: 18, borderRadius: 8 },
+    btnCancelar: { backgroundColor: isDark ? "#2D3748" : "#E4EEEB" },
+    btnGuardar: { backgroundColor: c.primary },
+    btnTextCancelar: { color: c.muted, fontWeight: "bold" },
+    btnTextGuardar: { color: isDark ? "#121212" : "#FFFFFF", fontWeight: "bold" },
+    btnDisabled: { opacity: 0.6 },
+    premiumBannerWrapper: {
+      paddingHorizontal: 20,
+      paddingTop: 16,
+      alignItems: "center",
+    },
+    premiumCard: {
+      width: "100%",
+      maxWidth: 580,
+      backgroundColor: c.card,
+      borderRadius: 16,
+      borderWidth: 1,
+      borderColor: c.border,
+      paddingVertical: 36,
+      paddingHorizontal: 26,
+      alignItems: "center",
+    },
+    premiumIconContainer: {
+      width: 72,
+      height: 72,
+      borderRadius: 36,
+      backgroundColor: "rgba(251, 191, 36, 0.12)",
+      alignItems: "center",
+      justifyContent: "center",
+      marginBottom: 16,
+      borderWidth: 1,
+      borderColor: "rgba(251, 191, 36, 0.35)",
+    },
+    badgePremium: {
+      backgroundColor: "rgba(251, 191, 36, 0.15)",
+      borderColor: "rgba(251, 191, 36, 0.35)",
+      borderWidth: 1,
+      borderRadius: 12,
+      paddingHorizontal: 12,
+      paddingVertical: 5,
+      marginBottom: 12,
+    },
+    badgePremiumTexto: {
+      color: "#B45309",
+      fontSize: 11,
+      fontWeight: "800",
+      letterSpacing: 0.6,
+    },
+    premiumTitulo: {
+      fontSize: 22,
+      fontWeight: "800",
+      color: c.text,
+      textAlign: "center",
+      marginBottom: 10,
+    },
+    premiumDescripcion: {
+      fontSize: 14,
+      lineHeight: 22,
+      color: c.muted,
+      textAlign: "center",
+      marginBottom: 24,
+      paddingHorizontal: 12,
+    },
+    botonDesbloquear: {
+      backgroundColor: c.primary,
+      paddingVertical: 14,
+      paddingHorizontal: 28,
+      borderRadius: 12,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    botonDesbloquearTexto: {
+      color: isDark ? "#121212" : "#FFFFFF",
+      fontSize: 14.5,
+      fontWeight: "700",
+      letterSpacing: 0.2,
+    },
+  });
+};
